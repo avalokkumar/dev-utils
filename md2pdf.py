@@ -2,243 +2,248 @@
 
 import os
 import sys
-import base64
+import re
 import subprocess
+import tempfile
+import hashlib
 from pathlib import Path
 
+# Check and install required packages
 try:
     import markdown
-    import jinja2
+    from playwright.sync_api import sync_playwright
 except ImportError:
     print("Installing required packages...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "markdown", "jinja2", "pygments"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "markdown", "playwright", "pygments"])
+    print("Installing playwright browsers...")
+    subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
     import markdown
-    import jinja2
+    from playwright.sync_api import sync_playwright
 
-# HTML template with CSS for nice formatting
+# HTML template with CSS for nice formatting and Mermaid support
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
+    <title>{title}</title>
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({{ 
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: {{
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }}
+        }});
+    </script>
     <style>
-        @page {
+        @page {{
             size: A4;
             margin: 1.5cm;
-        }
-        body {
+        }}
+        body {{
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             line-height: 1.6;
             color: #333;
             max-width: 100%;
-            padding: 0;
+            padding: 20px;
             margin: 0;
-        }
-        h1 {
+        }}
+        h1 {{
             font-size: 24pt;
             color: #333;
-            border-bottom: 1px solid #ddd;
+            border-bottom: 2px solid #ddd;
             padding-bottom: 0.3cm;
-        }
-        h2 {
+            margin-top: 0;
+        }}
+        h2 {{
             font-size: 18pt;
             color: #444;
             margin-top: 1.5em;
             border-bottom: 1px solid #eee;
             padding-bottom: 0.2cm;
-        }
-        h3 {
+        }}
+        h3 {{
             font-size: 14pt;
             color: #555;
-        }
-        h4, h5, h6 {
+            margin-top: 1.2em;
+        }}
+        h4, h5, h6 {{
             color: #666;
-        }
-        p {
+            margin-top: 1em;
+        }}
+        p {{
             text-align: justify;
             margin: 1em 0;
-        }
-        code {
+        }}
+        code {{
             background-color: #f5f5f5;
             border-radius: 3px;
             font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
             font-size: 85%;
             padding: 0.2em 0.4em;
-        }
-        pre {
+        }}
+        pre {{
             background-color: #f5f5f5;
             border: 1px solid #ddd;
             border-radius: 3px;
             padding: 1em;
             overflow-x: auto;
             margin: 1em 0;
-        }
-        pre code {
+            page-break-inside: avoid;
+        }}
+        pre code {{
             background-color: transparent;
             padding: 0;
-        }
-        blockquote {
+        }}
+        blockquote {{
             border-left: 4px solid #ddd;
             padding-left: 1em;
             color: #666;
             margin: 1em 0 1em 1em;
-        }
-        ul, ol {
+        }}
+        ul, ol {{
             margin: 1em 0;
             padding-left: 2em;
-        }
-        li {
+        }}
+        li {{
             margin-bottom: 0.5em;
-        }
-        li > ul, li > ol {
+        }}
+        li > ul, li > ol {{
             margin: 0.5em 0;
-        }
-        table {
+        }}
+        table {{
             border-collapse: collapse;
             width: 100%;
             margin: 1em 0;
-        }
-        th, td {
+            page-break-inside: avoid;
+        }}
+        th, td {{
             border: 1px solid #ddd;
             padding: 8px 12px;
             text-align: left;
-        }
-        th {
+        }}
+        th {{
             background-color: #f2f2f2;
             font-weight: bold;
-        }
-        tr:nth-child(even) {
+        }}
+        tr:nth-child(even) {{
             background-color: #f9f9f9;
-        }
-        a {
+        }}
+        a {{
             color: #0366d6;
             text-decoration: none;
-        }
-        a:hover {
+        }}
+        a:hover {{
             text-decoration: underline;
-        }
-        hr {
+        }}
+        hr {{
             border: 0;
             border-top: 1px solid #ddd;
             margin: 2em 0;
-        }
-        img {
+        }}
+        img {{
             max-width: 100%;
             height: auto;
-        }
-        .toc {
-            background-color: #f8f8f8;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 1em;
-            margin: 1em 0;
-        }
-        .toc ul {
-            margin: 0.5em 0;
-        }
-        .toc-title {
-            font-weight: bold;
-            margin-bottom: 0.5em;
-        }
+        }}
+        /* Mermaid diagram styling */
+        .mermaid {{
+            text-align: center;
+            margin: 2em 0;
+            page-break-inside: avoid;
+        }}
+        .mermaid svg {{
+            max-width: 100%;
+            height: auto;
+        }}
         /* Code Highlighting */
-        .codehilite .hll { background-color: #ffffcc }
-        .codehilite .c { color: #408080; font-style: italic } /* Comment */
-        .codehilite .k { color: #008000; font-weight: bold } /* Keyword */
-        .codehilite .o { color: #666666 } /* Operator */
-        .codehilite .ch { color: #408080; font-style: italic } /* Comment.Hashbang */
-        .codehilite .cm { color: #408080; font-style: italic } /* Comment.Multiline */
-        .codehilite .cp { color: #BC7A00 } /* Comment.Preproc */
-        .codehilite .cpf { color: #408080; font-style: italic } /* Comment.PreprocFile */
-        .codehilite .c1 { color: #408080; font-style: italic } /* Comment.Single */
-        .codehilite .cs { color: #408080; font-style: italic } /* Comment.Special */
-        .codehilite .gd { color: #A00000 } /* Generic.Deleted */
-        .codehilite .ge { font-style: italic } /* Generic.Emph */
-        .codehilite .gr { color: #FF0000 } /* Generic.Error */
-        .codehilite .gh { color: #000080; font-weight: bold } /* Generic.Heading */
-        .codehilite .gi { color: #00A000 } /* Generic.Inserted */
-        .codehilite .go { color: #888888 } /* Generic.Output */
-        .codehilite .gp { color: #000080; font-weight: bold } /* Generic.Prompt */
-        .codehilite .gs { font-weight: bold } /* Generic.Strong */
-        .codehilite .gu { color: #800080; font-weight: bold } /* Generic.Subheading */
-        .codehilite .gt { color: #0044DD } /* Generic.Traceback */
-        .codehilite .kc { color: #008000; font-weight: bold } /* Keyword.Constant */
-        .codehilite .kd { color: #008000; font-weight: bold } /* Keyword.Declaration */
-        .codehilite .kn { color: #008000; font-weight: bold } /* Keyword.Namespace */
-        .codehilite .kp { color: #008000 } /* Keyword.Pseudo */
-        .codehilite .kr { color: #008000; font-weight: bold } /* Keyword.Reserved */
-        .codehilite .kt { color: #B00040 } /* Keyword.Type */
-        .codehilite .m { color: #666666 } /* Literal.Number */
-        .codehilite .s { color: #BA2121 } /* Literal.String */
+        .codehilite .hll {{ background-color: #ffffcc }}
+        .codehilite .c {{ color: #408080; font-style: italic }}
+        .codehilite .k {{ color: #008000; font-weight: bold }}
+        .codehilite .o {{ color: #666666 }}
+        .codehilite .s {{ color: #BA2121 }}
     </style>
 </head>
 <body>
     <div class="container">
-        {{ content }}
+        {content}
     </div>
 </body>
 </html>
 """
 
+def extract_mermaid_blocks(md_content):
+    """
+    Extract Mermaid code blocks from markdown and replace with HTML div placeholders
+    Returns: (modified_markdown, list_of_mermaid_codes)
+    """
+    mermaid_pattern = re.compile(r'```mermaid\s*\n(.*?)\n```', re.DOTALL)
+    mermaid_blocks = []
+    
+    def replace_mermaid(match):
+        mermaid_code = match.group(1).strip()
+        mermaid_blocks.append(mermaid_code)
+        # Create a unique placeholder that will be replaced with rendered diagram
+        placeholder = f'<div class="mermaid">\n{mermaid_code}\n</div>'
+        return placeholder
+    
+    modified_content = mermaid_pattern.sub(replace_mermaid, md_content)
+    return modified_content, mermaid_blocks
+
+
 def create_pdf_from_html(html_content, output_path):
     """
-    Convert HTML to PDF using Chrome or Firefox in headless mode
+    Convert HTML to PDF using Playwright with Chromium
+    This ensures Mermaid diagrams are properly rendered
     """
-    # First, try Chrome
     try:
-        chrome_paths = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/usr/bin/google-chrome",
-            "/usr/bin/chromium",
-        ]
-        chrome_path = None
-        for path in chrome_paths:
-            if os.path.exists(path):
-                chrome_path = path
-                break
-                
-        if chrome_path:
-            cmd = [
-                chrome_path,
-                "--headless",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--print-to-pdf=" + output_path,
-                "data:text/html;base64," + base64.b64encode(html_content.encode()).decode()
-            ]
-            subprocess.run(cmd, check=True, capture_output=True)
-            print(f"✓ Created PDF using Chrome: {output_path}")
+        with sync_playwright() as p:
+            # Launch browser
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            
+            # Set content and wait for Mermaid to render
+            page.set_content(html_content)
+            
+            # Wait for Mermaid diagrams to render
+            # Check if there are any mermaid elements
+            try:
+                page.wait_for_selector('.mermaid svg', timeout=10000)
+                # Give extra time for all diagrams to render
+                page.wait_for_timeout(2000)
+            except:
+                # No mermaid diagrams or they rendered quickly
+                page.wait_for_timeout(500)
+            
+            # Generate PDF with proper settings
+            page.pdf(
+                path=output_path,
+                format='A4',
+                margin={
+                    'top': '1.5cm',
+                    'right': '1.5cm',
+                    'bottom': '1.5cm',
+                    'left': '1.5cm'
+                },
+                print_background=True,
+                prefer_css_page_size=True
+            )
+            
+            browser.close()
             return True
-    except (subprocess.SubprocessError, FileNotFoundError) as e:
-        print(f"Chrome conversion failed: {str(e)}")
-    
-    # Try using Firefox if Chrome failed
-    try:
-        if shutil.which("firefox"):
-            with open("temp.html", "wb") as f:
-                f.write(html_content.encode('utf-8'))
-                
-            cmd = [
-                "firefox",
-                "--headless",
-                "--print-to-pdf=" + output_path,
-                os.path.abspath("temp.html")
-            ]
-            subprocess.run(cmd, check=True, capture_output=True)
-            os.remove("temp.html")
-            print(f"✓ Created PDF using Firefox: {output_path}")
-            return True
-    except (subprocess.SubprocessError, FileNotFoundError) as e:
-        print(f"Firefox conversion failed: {str(e)}")
-        os.remove("temp.html") if os.path.exists("temp.html") else None
-    
-    print("❌ Failed to convert HTML to PDF. Please install Chrome or Firefox.")
-    return False
+            
+    except Exception as e:
+        print(f"❌ Error creating PDF: {str(e)}")
+        return False
 
 def convert_md_to_pdf(md_file_path, output_dir):
     """
-    Convert markdown to PDF with proper formatting
+    Convert markdown to PDF with proper formatting and Mermaid diagram rendering
     """
     try:
         # Create output directory if it doesn't exist
@@ -252,6 +257,12 @@ def convert_md_to_pdf(md_file_path, output_dir):
         with open(md_file_path, "r", encoding="utf-8") as f:
             md_content = f.read()
         
+        # Extract and process Mermaid blocks
+        md_content, mermaid_blocks = extract_mermaid_blocks(md_content)
+        
+        if mermaid_blocks:
+            print(f"  Found {len(mermaid_blocks)} Mermaid diagram(s) in {os.path.basename(md_file_path)}")
+        
         # Convert to HTML using Python Markdown
         extensions = [
             'markdown.extensions.tables',
@@ -260,14 +271,14 @@ def convert_md_to_pdf(md_file_path, output_dir):
             'markdown.extensions.toc',
             'markdown.extensions.nl2br',
             'markdown.extensions.sane_lists',
-            'markdown.extensions.smarty'
+            'markdown.extensions.smarty',
+            'markdown.extensions.attr_list'
         ]
         
         html_body = markdown.markdown(md_content, extensions=extensions)
         
         # Render with template
-        template = jinja2.Template(HTML_TEMPLATE)
-        html = template.render(
+        html = HTML_TEMPLATE.format(
             title=base_name,
             content=html_body
         )
@@ -281,40 +292,54 @@ def convert_md_to_pdf(md_file_path, output_dir):
         
     except Exception as e:
         print(f"✗ Error converting {md_file_path}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def scan_and_convert(folder_path, output_dir):
     """
-    Recursively scan for markdown files and convert them to PDFs
+    Scan for markdown files in current directory (non-recursive) and convert them to PDFs
     """
     successful = 0
     failed = 0
     md_files = []
     
-    # Find all markdown files
-    for path in Path(folder_path).rglob('*.md'):
+    # Find all markdown files in current directory only (not recursive)
+    for path in Path(folder_path).glob('*.md'):
         md_files.append(str(path))
     
-    print(f"Found {len(md_files)} markdown files in {folder_path}")
+    if not md_files:
+        print(f"No markdown files found in {folder_path}")
+        return 0, 0
+    
+    print(f"Found {len(md_files)} markdown file(s) in {folder_path}\n")
     
     # Convert all found files
     for md_file_path in md_files:
+        print(f"\nProcessing: {os.path.basename(md_file_path)}")
         if convert_md_to_pdf(md_file_path, output_dir):
             successful += 1
         else:
             failed += 1
     
-    print(f"\nSummary: {successful} files converted successfully, {failed} files failed")
+    print(f"\n{'='*60}")
+    print(f"Summary: {successful} file(s) converted successfully, {failed} file(s) failed")
+    print(f"{'='*60}")
     return successful, failed
 
 if __name__ == "__main__":
-    # Top level directory to scan
+    # Current directory to scan
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    top_level_dir = os.path.abspath(os.path.join(script_dir, '../..'))
+    current_dir = script_dir
     
-    output_dir = script_dir
+    # Output directory for PDFs
+    output_dir = os.path.join(script_dir, "pdfs")
     
-    print(f"Scanning for markdown files in: {top_level_dir}")
-    print(f"Saving PDFs to: {output_dir}\n")
+    print("="*60)
+    print("Markdown to PDF Converter with Mermaid Support")
+    print("="*60)
+    print(f"Scanning for markdown files in: {current_dir}")
+    print(f"Saving PDFs to: {output_dir}")
+    print("="*60 + "\n")
     
-    scan_and_convert(top_level_dir, output_dir)
+    scan_and_convert(current_dir, output_dir)
